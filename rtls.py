@@ -2,16 +2,17 @@
 """
 rtls — GitHub installer (user-mode) with distro-aware dependency handling.
 
-Behavior change (requested):
-- If requirements are missing and cannot be installed, rtls will abort the install
-  and NOT copy/build the target by default.
-- To override and continue despite missing requirements use --force (or set RTLS_FORCE_INSTALL=1).
+Features:
+- rtls install <repo> [--bin] [--target-dir <dir>] [--force]
+- rtls uninstall <name>
+- rtls list
+- rtls update    # <-- runs the official install.sh via curl|bash
+- rtls help
 
-Usage:
-  rtls install <repo> [--bin] [--target-dir <dir>] [--force]
-  rtls uninstall <name>
-  rtls list
-  rtls help
+Notes:
+- By default rtls uses pip --user for Python installs (safe).
+- If a requirement cannot be satisfied, rtls will abort the install unless --force is used.
+- To allow automatic system package manager installs, set RTLS_INSTALL_SYSTEM=1 or run as root.
 """
 from __future__ import annotations
 import os
@@ -24,7 +25,6 @@ import tempfile
 import textwrap
 import importlib
 import re
-import platform
 from typing import Optional
 
 HOME = os.path.expanduser("~")
@@ -33,6 +33,7 @@ STATE_DIR = os.path.join(HOME, ".rtls")
 INSTALLED_DB = os.path.join(STATE_DIR, "installed.txt")
 DEFAULT_TARGET_DIR = os.path.join(HOME, ".local", "bin")
 GITHUB_ARCHIVE_PATH = "archive/refs/heads/main.tar.gz"  # default branch archive
+OFFICIAL_INSTALLER = "https://raw.githubusercontent.com/AleXDE54/realtools/main/install.sh"
 
 
 # ---------------- utilities ----------------
@@ -78,7 +79,6 @@ def extract_archive_to_temp(archive_path: str) -> str:
     except Exception as e:
         shutil.rmtree(tmpdir, ignore_errors=True)
         raise RuntimeError(f"Failed to extract {archive_path}: {e}")
-    # repo archive typically extracts into <repo>-main
     entries = [p for p in os.listdir(tmpdir) if os.path.isdir(os.path.join(tmpdir, p))]
     if not entries:
         return tmpdir
@@ -158,17 +158,12 @@ def remove_installed(name: str):
 
 # ---------------- distro detection & suggestions ----------------
 def detect_distro() -> str:
-    """
-    Return a short distro identifier: arch, debian, ubuntu, fedora, macos, windows, unknown
-    """
     plat = sys.platform
     if plat == "darwin":
         return "macos"
     if plat.startswith("win"):
         return "windows"
-    # linux
     try:
-        # try reading /etc/os-release
         with open("/etc/os-release", "r", encoding="utf-8") as f:
             data = f.read().lower()
             if "arch" in data or "manjaro" in data:
@@ -187,10 +182,6 @@ def detect_distro() -> str:
 
 
 def suggest_system_command(import_name: str, distro: str) -> str:
-    """
-    Map an import name to a likely system package name and return a suggested install command string.
-    This is heuristic — adjust as needed.
-    """
     base = import_name.lower()
     pkg_variants = []
     if base.startswith("python-"):
@@ -220,14 +211,8 @@ def suggest_system_command(import_name: str, distro: str) -> str:
     return f"python3 -m pip install --user {import_name}"
 
 
-# ---------------- requirement install helpers ----------------
+# ---------------- requirement helpers ----------------
 def canonical_import_name(req: str) -> str:
-    """
-    Derive an importable module name from a requirement string.
-    Examples:
-      "python-mpv" -> "mpv"
-      "pyperclip>=1.8" -> "pyperclip"
-    """
     name = re.split(r"[<>=!~]", req, maxsplit=1)[0].strip()
     if name.startswith("python-"):
         return name[len("python-") :].replace("-", "_")
@@ -237,7 +222,6 @@ def canonical_import_name(req: str) -> str:
 
 
 def pip_install_user(req: str) -> bool:
-    """Attempt pip --user install. Return True on success."""
     cmd = [sys.executable, "-m", "pip", "install", "--user", req]
     print(f"[pip] trying: {' '.join(cmd)}")
     try:
@@ -249,11 +233,6 @@ def pip_install_user(req: str) -> bool:
 
 
 def try_system_install(system_cmd: str) -> bool:
-    """
-    Attempt to run the suggested system command.
-    Only executed if allowed (RTLS_INSTALL_SYSTEM=1 or running as root).
-    Returns True on success.
-    """
     auto_allowed = os.environ.get("RTLS_INSTALL_SYSTEM", "") == "1" or (hasattr(os, "geteuid") and os.geteuid() == 0)
     print(f"[system] suggested: {system_cmd}")
     if not auto_allowed:
@@ -269,16 +248,6 @@ def try_system_install(system_cmd: str) -> bool:
 
 
 def ensure_requirement(req: str) -> bool:
-    """
-    Ensure a single requirement is available.
-    Steps:
-      - derive probable import name and try import
-      - if import ok -> return True
-      - print suggested system package command
-      - try pip --user automatically
-      - if pip fails and auto-allowed -> try system package manager command
-      - otherwise return False
-    """
     import_name = canonical_import_name(req)
     tried_names = [import_name]
     if "_" in import_name:
@@ -325,7 +294,6 @@ def ensure_requirement(req: str) -> bool:
 
 
 def ensure_requirements_list(reqs: list[str]) -> bool:
-    """Ensure all requirements in the list are available. Returns True if all satisfied."""
     all_ok = True
     for r in reqs:
         if not r:
@@ -338,10 +306,6 @@ def ensure_requirements_list(reqs: list[str]) -> bool:
 
 # ---------------- build & install ----------------
 def build_with_pyinstaller(entry_path: str, workdir: str) -> str:
-    """
-    Attempts to build a onefile binary with PyInstaller.
-    Uses system python -m PyInstaller; requires PyInstaller available (pip/system).
-    """
     if not ensure_requirement("pyinstaller"):
         raise RuntimeError("PyInstaller not available and could not be installed automatically.")
     entry_abspath = os.path.abspath(entry_path)
@@ -369,6 +333,23 @@ def install_to_target(src_path: str, name: str, target_dir: str = DEFAULT_TARGET
     shutil.copy(src_path, target)
     os.chmod(target, 0o755)
     return target
+
+
+# ---------------- update (self-update) ----------------
+def update_rtls():
+    """
+    Self-update by running the official installer script via curl|bash.
+    This will re-download and re-install rtls using the repo installer.
+    """
+    cmd = f"curl -sSL {OFFICIAL_INSTALLER} | bash"
+    print("[info] running self-update command:")
+    print("  " + cmd)
+    try:
+        subprocess.run(cmd, shell=True, check=True)
+        print("✅ rtls updated successfully")
+    except subprocess.CalledProcessError as e:
+        print("[error] update failed:", e)
+        raise
 
 
 # ---------------- main install flow ----------------
@@ -447,20 +428,23 @@ def uninstall(name: str, target_dir: Optional[str] = None):
 
 
 # ---------------- CLI ----------------
-USAGE = textwrap.dedent("""
+USAGE = textwrap.dedent(f"""
 rtls — GitHub installer (user-mode)
 
 Usage:
   rtls install <repo> [--bin] [--target-dir <dir>] [--force]
   rtls uninstall <name>
   rtls list
+  rtls update
   rtls help
 
 Notes:
 - By default rtls uses pip --user for Python installs (safe).
 - If a requirement cannot be satisfied, rtls will abort the install.
 - To force installation despite missing dependencies: pass --force or set RTLS_FORCE_INSTALL=1 in environment.
+- update will run the official installer: curl -sSL {OFFICIAL_INSTALLER} | bash
 """)
+
 
 def cmd_list():
     ensure_dirs()
@@ -497,6 +481,8 @@ def main():
             uninstall(sys.argv[2])
         elif cmd == "list":
             cmd_list()
+        elif cmd == "update":
+            update_rtls()
         else:
             print(USAGE)
     except Exception as e:
