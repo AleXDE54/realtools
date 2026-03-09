@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
 set -e
 
-REPO_RAW_BASE="https://raw.githubusercontent.com/AleXDE54/realtools/main"
 INSTALL_DIR="$HOME/.local/bin"
 TMP="$(mktemp -d)"
-RTLS_URL="$REPO_RAW_BASE/rtls.py"
+RTLS_URL="https://raw.githubusercontent.com/AleXDE54/realtools/main/rtls.py"
 
-echo "Installing rtls to $INSTALL_DIR (user mode)..."
 mkdir -p "$INSTALL_DIR"
 
+echo "Downloading rtls..."
 curl -sSL "$RTLS_URL" -o "$TMP/rtls.py"
 chmod +x "$TMP/rtls.py"
 mv "$TMP/rtls.py" "$INSTALL_DIR/rtls"
-echo "rtls installed to $INSTALL_DIR/rtls"
-export PATH="$PATH:$HOME/.local/bin"
-echo "rtls added to the PATH"
 
-echo "If not working add the following to ~/.profile or ~/.bashrc (and restart shell):"
-echo "export PATH=\"\$PATH:$INSTALL_DIR\""
+# Ensure INSTALL_DIR is in ~/.profile
+PROFILE="$HOME/.profile"
+if ! grep -q "$INSTALL_DIR" "$PROFILE" 2>/dev/null; then
+    echo "" >> "$PROFILE"
+    echo "# added by rtls installer" >> "$PROFILE"
+    echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> "$PROFILE"
+    echo "[info] Added $INSTALL_DIR to $PROFILE. Run 'source $PROFILE' or restart your shell."
+fi
 
-echo "Done. Run: rtls help"
+echo "✅ rtls installed to $INSTALL_DIR/rtls"
+echo "Run: rtls help"
