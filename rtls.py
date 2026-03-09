@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
 """
-rtls — tiny GitHub installer (user-mode) with distro-aware dependency hints.
+rtls — GitHub installer (user-mode) with distro-aware dependency handling.
 
-Features:
-- rtls install <repo> [--bin] [--target-dir <dir>]
-- reads realtools.txt from repo root
-- checks requirements: import -> pip --user -> suggest/optionally run system package manager
-- installs script/binary to ~/.local/bin by default
-- tracks installed names in ~/.rtls/installed.txt
+Behavior change (requested):
+- If requirements are missing and cannot be installed, rtls will abort the install
+  and NOT copy/build the target by default.
+- To override and continue despite missing requirements use --force (or set RTLS_FORCE_INSTALL=1).
 
-Automatic system install:
-- By default rtls will NOT run system package manager commands.
-- To allow rtls to attempt system installs automatically, either:
-    - run as root (UID 0), or
-    - set environment variable RTLS_INSTALL_SYSTEM=1
+Usage:
+  rtls install <repo> [--bin] [--target-dir <dir>] [--force]
+  rtls uninstall <name>
+  rtls list
+  rtls help
 """
 from __future__ import annotations
 import os
@@ -193,9 +191,7 @@ def suggest_system_command(import_name: str, distro: str) -> str:
     Map an import name to a likely system package name and return a suggested install command string.
     This is heuristic — adjust as needed.
     """
-    # try common conversions: mpv binding often package python-mpv, Debian python3-mpv
     base = import_name.lower()
-    # handle 'python-' or '-' to '_'
     pkg_variants = []
     if base.startswith("python-"):
         pkg_variants.append(base)
@@ -205,7 +201,6 @@ def suggest_system_command(import_name: str, distro: str) -> str:
         pkg_variants.append(base.replace("-", "_"))
     else:
         pkg_variants.append(base)
-    # common prefix for distro packages
     if distro in ("arch",):
         candidate = f"python-{pkg_variants[0]}"
         return f"sudo pacman -S {candidate}"
@@ -228,18 +223,14 @@ def suggest_system_command(import_name: str, distro: str) -> str:
 # ---------------- requirement install helpers ----------------
 def canonical_import_name(req: str) -> str:
     """
-    Try to derive an importable module name from a requirement string.
+    Derive an importable module name from a requirement string.
     Examples:
       "python-mpv" -> "mpv"
-      "python_mpv" -> "python_mpv"
       "pyperclip>=1.8" -> "pyperclip"
     """
-    # strip version specifiers
-    name = re.split(r"[<>=!~]", req, 1)[0].strip()
-    # if name starts with python- try to use rest as import
+    name = re.split(r"[<>=!~]", req, maxsplit=1)[0].strip()
     if name.startswith("python-"):
         return name[len("python-") :].replace("-", "_")
-    # if name contains dash, try underscore
     if "-" in name:
         return name.replace("-", "_")
     return name
@@ -268,11 +259,8 @@ def try_system_install(system_cmd: str) -> bool:
     if not auto_allowed:
         print("[system] automatic system install not allowed. To enable, set RTLS_INSTALL_SYSTEM=1 or run as root.")
         return False
-
-    # split command for run (shell=False safe split)
     print("[system] executing suggested system command (this may require network / sudo)...")
     try:
-        # use shell so compound commands (like apt update && apt install) succeed
         subprocess.run(system_cmd, shell=True, check=True)
         return True
     except Exception as e:
@@ -293,7 +281,6 @@ def ensure_requirement(req: str) -> bool:
     """
     import_name = canonical_import_name(req)
     tried_names = [import_name]
-    # also try name without underscores/dashes
     if "_" in import_name:
         tried_names.append(import_name.replace("_", ""))
     if "-" in import_name:
@@ -307,17 +294,14 @@ def ensure_requirement(req: str) -> bool:
         except Exception:
             pass
 
-    # not importable -> show suggestion
     distro = detect_distro()
     suggestion = suggest_system_command(import_name, distro)
     print(f"[warn] requirement '{req}' not importable.")
     print(f"[info] detected platform: {distro}")
     print(f"[info] suggestion: {suggestion}")
 
-    # Try pip --user first (safe)
     pip_ok = pip_install_user(req)
     if pip_ok:
-        # try import again
         try:
             importlib.invalidate_caches()
             importlib.import_module(import_name)
@@ -325,12 +309,9 @@ def ensure_requirement(req: str) -> bool:
             return True
         except Exception:
             print(f"[warn] pip installed '{req}' but import still fails for '{import_name}'.")
-            # fallthrough to system attempt or fail
 
-    # If pip didn't work, optionally try system install
     sys_ok = try_system_install(suggestion)
     if sys_ok:
-        # try import once more
         try:
             importlib.invalidate_caches()
             importlib.import_module(import_name)
@@ -361,7 +342,6 @@ def build_with_pyinstaller(entry_path: str, workdir: str) -> str:
     Attempts to build a onefile binary with PyInstaller.
     Uses system python -m PyInstaller; requires PyInstaller available (pip/system).
     """
-    # try import PyInstaller first: if missing, attempt pip install --user pyinstaller (or system if allowed)
     if not ensure_requirement("pyinstaller"):
         raise RuntimeError("PyInstaller not available and could not be installed automatically.")
     entry_abspath = os.path.abspath(entry_path)
@@ -392,7 +372,7 @@ def install_to_target(src_path: str, name: str, target_dir: str = DEFAULT_TARGET
 
 
 # ---------------- main install flow ----------------
-def install_repo(repo: str, build_bin: bool = False, target_dir: Optional[str] = None):
+def install_repo(repo: str, build_bin: bool = False, target_dir: Optional[str] = None, force: bool = False):
     target_dir = target_dir or DEFAULT_TARGET_DIR
     ensure_dirs()
     repo_url = normalize_repo(repo)
@@ -422,8 +402,12 @@ def install_repo(repo: str, build_bin: bool = False, target_dir: Optional[str] =
         print("[info] checking requirements...")
         ok = ensure_requirements_list(requirements)
         if not ok:
-            print("[warn] Some requirements could not be installed automatically. You may need to install them manually.")
-            # continue anyway — user might still want to install script (but it may fail at runtime)
+            if not force:
+                print("[fatal] Some requirements are missing and could not be installed.")
+                print("        Install dependencies first or rerun with --force to override.")
+                raise RuntimeError("Unsatisfied requirements — aborting installation.")
+            else:
+                print("[warn] continuing installation despite unsatisfied requirements due to --force / RTLS_FORCE_INSTALL=1")
 
     # Build or copy
     installed_target = None
@@ -467,14 +451,15 @@ USAGE = textwrap.dedent("""
 rtls — GitHub installer (user-mode)
 
 Usage:
-  rtls install <repo> [--bin] [--target-dir <dir>]
+  rtls install <repo> [--bin] [--target-dir <dir>] [--force]
   rtls uninstall <name>
   rtls list
   rtls help
 
 Notes:
 - By default rtls uses pip --user for Python installs (safe).
-- To allow automatic system package manager installs, set RTLS_INSTALL_SYSTEM=1 or run rtls as root.
+- If a requirement cannot be satisfied, rtls will abort the install.
+- To force installation despite missing dependencies: pass --force or set RTLS_FORCE_INSTALL=1 in environment.
 """)
 
 def cmd_list():
@@ -499,12 +484,13 @@ def main():
                 print("Error: repo required."); return
             repo = sys.argv[2]
             build_bin = "--bin" in sys.argv or "-b" in sys.argv
+            force = ("--force" in sys.argv or "-f" in sys.argv) or os.environ.get("RTLS_FORCE_INSTALL", "") == "1"
             target_dir = None
             if "--target-dir" in sys.argv:
                 idx = sys.argv.index("--target-dir")
                 if idx + 1 < len(sys.argv):
                     target_dir = sys.argv[idx + 1]
-            install_repo(repo, build_bin=build_bin, target_dir=target_dir)
+            install_repo(repo, build_bin=build_bin, target_dir=target_dir, force=force)
         elif cmd in ("uninstall", "remove", "rm"):
             if len(sys.argv) < 3:
                 print("Error: name required."); return
