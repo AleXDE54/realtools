@@ -1,2 +1,0 @@
-"lofitty"/"lofitty.tar.xz"
-"waysnake"/"waysnake.tar.xz"
