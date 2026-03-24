@@ -10,7 +10,6 @@ Features:
 - rtls help
 
 Notes:
-- By default rtls uses pip --user for Python installs (safe).
 - If a requirement cannot be satisfied, rtls will abort the install unless --force is used.
 - To allow automatic system package manager installs, set RTLS_INSTALL_SYSTEM=1 or run as root.
 """
@@ -222,7 +221,7 @@ def canonical_import_name(req: str) -> str:
 
 
 def pip_install_user(req: str) -> bool:
-    cmd = [sys.executable, "-m", "pip", "install", "--user", req]
+    cmd = [sys.executable, "-m", "pip", "install", "--user", req, "--break-system-packages"]
     print(f"[pip] trying: {' '.join(cmd)}")
     try:
         run(cmd)
@@ -346,7 +345,7 @@ def update_rtls():
     print("  " + cmd)
     try:
         subprocess.run(cmd, shell=True, check=True)
-        print("✅ rtls updated successfully")
+        print("rtls updated successfully")
     except subprocess.CalledProcessError as e:
         print("[error] update failed:", e)
         raise
@@ -404,7 +403,7 @@ def install_repo(repo: str, build_bin: bool = False, target_dir: Optional[str] =
         run(cmd if isinstance(cmd, list) else ["bash", "-lc", cmd])
 
     add_installed(repo_name)
-    print(f"✅ Installed {repo_name} -> {installed_target}")
+    print(f"Installed {repo_name} -> {installed_target}")
     if target_dir not in os.environ.get("PATH", ""):
         print(f"[note] add the following to your shell profile if not present:")
         print(f"  export PATH=\"$PATH:{target_dir}\"")
@@ -422,7 +421,7 @@ def uninstall(name: str, target_dir: Optional[str] = None):
             removed = True
     if removed:
         remove_installed(name)
-        print(f"✅ Uninstalled {name}")
+        print(f"Uninstalled {name}")
     else:
         print(f"[info] nothing found for {name} in {target_dir}")
 
