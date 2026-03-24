@@ -21,5 +21,5 @@ if ! grep -q "$INSTALL_DIR" "$PROFILE" 2>/dev/null; then
     echo "[info] Added $INSTALL_DIR to $PROFILE. Run 'source $PROFILE' or restart your shell."
 fi
 
-echo "✅ rtls installed to $INSTALL_DIR/rtls"
+echo "rtls installed to $INSTALL_DIR/rtls"
 echo "Run: rtls help"
